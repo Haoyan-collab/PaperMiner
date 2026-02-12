@@ -12,6 +12,7 @@ import logging
 import os
 from pathlib import Path
 from typing import Optional, List
+from urllib.parse import unquote  # 用于解码 URL 路径
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QMenu,
@@ -19,7 +20,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QUrl, QByteArray, QBuffer, QIODevice, pyqtSignal, pyqtSlot, QObject
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebEngineCore import (
-    QWebEnginePage, QWebEngineSettings, QWebEngineUrlSchemeHandler, QWebEngineProfile
+    QWebEnginePage, QWebEngineSettings, QWebEngineUrlSchemeHandler, QWebEngineProfile, QWebEngineScript
 )
 from PyQt6.QtWebChannel import QWebChannel
 
@@ -62,14 +63,16 @@ class LocalFileSchemeHandler(QWebEngineUrlSchemeHandler):
         """Handle requests for local:// URLs."""
         url = request.requestUrl()
 
-        # Extract file path from the full URL string to avoid Qt's
-        # Host-syntax URL parsing dropping the Windows drive letter.
-        raw = url.toString()
-        path = raw.split("?", 1)[0]            # strip query string
-        path = path.replace("local://", "", 1)  # strip scheme
-        # Remove leading slash for Windows paths like /E:/...
-        if path.startswith("/") and len(path) > 2 and path[2] == ":":
+        # --- 路径修复重点 ---
+        path = url.path()
+
+        # Windows 路径修正："/E:/..." -> "E:/..."
+        if os.name == 'nt' and path.startswith("/") and len(path) > 2 and path[2] == ":":
             path = path[1:]
+            
+        # 解码 URL (例如处理空格 %20)
+        path = unquote(path)
+        # --------------------
 
         logger.debug(f"LocalFileSchemeHandler: Loading {path}")
 
@@ -81,14 +84,13 @@ class LocalFileSchemeHandler(QWebEngineUrlSchemeHandler):
             ext = os.path.splitext(path)[1].lower()
             mime_type = self._MIME_TYPES.get(ext, b"application/octet-stream")
 
-            # Build a self-contained QBuffer so Python GC cannot
-            # destroy the backing QByteArray while Chromium reads it.
+            # Build a self-contained QBuffer
             buf = QBuffer(request)
             buf.open(QIODevice.OpenModeFlag.ReadWrite)
             buf.write(data)
             buf.seek(0)
 
-            # Hold a Python reference until the request is destroyed
+            # Hold a Python reference
             self._active_buffers.append(buf)
             request.destroyed.connect(lambda b=buf: self._release_buffer(b))
 
@@ -108,59 +110,48 @@ class LocalFileSchemeHandler(QWebEngineUrlSchemeHandler):
 
 class JsBridge(QObject):
     """
-    Python ↔ JavaScript bridge object, exposed to the web page via QWebChannel.
-    JavaScript calls methods on this object; Python emits signals back.
+    Python ↔ JavaScript bridge object.
     """
-
-    # Signals emitted when JS sends data to Python
-    text_selected = pyqtSignal(str)              # Selected text content
-    annotation_request = pyqtSignal(str)         # JSON: {page, text, rects, color}
-    context_action = pyqtSignal(str, str)        # (action_type, selected_text)
-    viewer_ready = pyqtSignal()                  # PDF.js viewer has finished loading
-    page_changed = pyqtSignal(int)               # Current page number changed
+    text_selected = pyqtSignal(str)              
+    annotation_request = pyqtSignal(str)         
+    context_action = pyqtSignal(str, str)        
+    viewer_ready = pyqtSignal()                  
+    page_changed = pyqtSignal(int)               
 
     def __init__(self, parent: QObject = None) -> None:
         super().__init__(parent)
 
     @pyqtSlot(str)
     def onTextSelected(self, text: str) -> None:
-        """Called by JS when user selects text in the PDF."""
         logger.debug(f"JS → Python: text selected ({len(text)} chars)")
         self.text_selected.emit(text)
 
     @pyqtSlot(str)
     def onAnnotationRequest(self, data_json: str) -> None:
-        """Called by JS when user creates a highlight annotation."""
         logger.debug(f"JS → Python: annotation request")
         self.annotation_request.emit(data_json)
 
     @pyqtSlot(str, str)
     def onContextAction(self, action: str, text: str) -> None:
-        """Called by JS when user clicks a contextual action (Explain/Translate/Save)."""
         logger.info(f"JS → Python: context action '{action}' on text ({len(text)} chars)")
         self.context_action.emit(action, text)
 
     @pyqtSlot()
     def onViewerReady(self) -> None:
-        """Called by JS when the PDF.js viewer is fully initialized."""
         logger.info("JS → Python: PDF.js viewer ready")
         self.viewer_ready.emit()
 
     @pyqtSlot(int)
     def onPageChanged(self, page_num: int) -> None:
-        """Called by JS when user navigates to a different page."""
         self.page_changed.emit(page_num)
 
 
 class PDFViewerWidget(QWidget):
     """
-    A QWidget wrapping QWebEngineView that loads PDF.js with QWebChannel integration.
-    Provides annotation management and contextual text actions.
+    Main PDF Viewer Widget.
     """
-
-    # Signals for parent widgets
     text_selected = pyqtSignal(str)
-    annotation_saved = pyqtSignal(int)  # annotation_id
+    annotation_saved = pyqtSignal(int)
 
     def __init__(self, db: DatabaseManager, parent: QWidget = None) -> None:
         super().__init__(parent)
@@ -206,43 +197,34 @@ class PDFViewerWidget(QWidget):
 
         layout.addLayout(toolbar)
 
-        # WebEngine view for PDF.js
+        # WebEngine view
         self.web_view = QWebEngineView()
         self._configure_web_settings()
-        
-        # Enable right-click context menu with "Inspect" option for debugging
         self.web_view.page().setDevToolsPage(QWebEnginePage(self.web_view))
-        
         layout.addWidget(self.web_view)
 
     def _configure_web_settings(self) -> None:
-        """Apply necessary QWebEngine settings for local PDF.js rendering."""
         s = self.web_view.settings()
         s.setAttribute(QWebEngineSettings.WebAttribute.PluginsEnabled, True)
         s.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls, True)
         s.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True)
         s.setAttribute(QWebEngineSettings.WebAttribute.JavascriptEnabled, True)
         s.setAttribute(QWebEngineSettings.WebAttribute.ScrollAnimatorEnabled, True)
-        # Disable the built-in PDF viewer to force our PDF.js
         s.setAttribute(QWebEngineSettings.WebAttribute.PdfViewerEnabled, False)
-        # Enable dev tools for debugging
         s.setAttribute(QWebEngineSettings.WebAttribute.JavascriptCanOpenWindows, True)
 
     def _setup_scheme_handler(self) -> None:
-        """Register custom URL scheme handler for local files."""
         profile = QWebEngineProfile.defaultProfile()
         self.scheme_handler = LocalFileSchemeHandler(self)
         profile.installUrlSchemeHandler(b"local", self.scheme_handler)
         logger.info("Custom 'local://' scheme handler registered.")
 
     def _setup_bridge(self) -> None:
-        """Initialize QWebChannel and register the JS bridge object."""
         self.js_bridge = JsBridge(self)
         self.channel = QWebChannel(self.web_view.page())
         self.web_view.page().setWebChannel(self.channel)
         self.channel.registerObject("pyBridge", self.js_bridge)
 
-        # Connect bridge signals
         self.js_bridge.text_selected.connect(self.text_selected.emit)
         self.js_bridge.annotation_request.connect(self._handle_annotation_request)
         self.js_bridge.context_action.connect(self._handle_context_action)
@@ -250,23 +232,18 @@ class PDFViewerWidget(QWidget):
         self.js_bridge.page_changed.connect(
             lambda p: self.page_label.setText(f"Page: {p}")
         )
-
         logger.info("QWebChannel bridge initialized.")
 
     def load_pdf(self, file_path: str, paper_id: int) -> None:
-        """Load a PDF file into the PDF.js viewer."""
         self.current_paper_id = paper_id
         self.current_pdf_path = os.path.abspath(file_path)
         self._viewer_ready = False
 
-        # Build the URL for our custom bridge HTML
         bridge_html = RESOURCES_DIR / "viewer_bridge.html"
         if not bridge_html.exists():
             logger.error(f"viewer_bridge.html not found at {bridge_html}")
             return
 
-        # Use custom local:// scheme for BOTH viewer and PDF
-        # so they share the same origin and pass PDF.js security checks
         pdf_path_normalized = self.current_pdf_path.replace("\\", "/")
         pdf_url = f"local:///{pdf_path_normalized}"
         
@@ -274,26 +251,17 @@ class PDFViewerWidget(QWidget):
         viewer_url_str = f"local:///{bridge_path_normalized}?file={pdf_url}"
 
         logger.info(f"Loading PDF: {self.current_pdf_path}")
-        logger.info(f"PDF URL: {pdf_url}")
-        logger.info(f"Viewer URL: {viewer_url_str}")
         self.web_view.setUrl(QUrl(viewer_url_str))
 
     def _on_viewer_ready(self) -> None:
-        """Called when PDF.js viewer signals it's fully loaded."""
-        # Guard against multiple ready signals
         if self._viewer_ready:
-            logger.debug("Viewer ready signal received again (ignoring)")
-            return
-            
+            return 
         self._viewer_ready = True
         logger.info("PDF.js viewer ready, loading annotations...")
-
-        # Load existing annotations for this paper
         if self.current_paper_id is not None:
             self._push_annotations_to_js()
 
     def _push_annotations_to_js(self) -> None:
-        """Send saved annotations from DB to JavaScript for rendering."""
         if not self._viewer_ready or self.current_paper_id is None:
             return
 
@@ -314,10 +282,8 @@ class PDFViewerWidget(QWidget):
 
         js_code = f"window.loadAnnotations({json.dumps(ann_data)});"
         self._run_js(js_code)
-        logger.info(f"Pushed {len(ann_data)} annotations to JS.")
 
     def _handle_annotation_request(self, data_json: str) -> None:
-        """Save an annotation from JavaScript to the database."""
         if self.current_paper_id is None:
             return
 
@@ -331,7 +297,6 @@ class PDFViewerWidget(QWidget):
                 color=data.get("color", "#FFFF00"),
                 rects_json=json.dumps(data.get("rects", [])),
             )
-            # Notify JS with the new annotation ID
             self._run_js(f"window.confirmAnnotation({ann_id});")
             self.annotation_saved.emit(ann_id)
             logger.info(f"Annotation saved: id={ann_id}")
@@ -339,22 +304,18 @@ class PDFViewerWidget(QWidget):
             logger.error(f"Failed to save annotation: {e}")
 
     def _handle_context_action(self, action: str, text: str) -> None:
-        """Handle contextual actions from the PDF viewer."""
         main_win = self.window()
         if hasattr(main_win, "open_ai_with_context"):
             main_win.open_ai_with_context(text, action)
         else:
-            logger.warning(f"Context action '{action}' not handled - main window missing method.")
+            logger.warning(f"Context action '{action}' not handled")
 
     def _refresh_pdf(self) -> None:
-        """Reload the current PDF in the viewer."""
         if self.current_pdf_path:
             self.web_view.reload()
 
     def _run_js(self, code: str) -> None:
-        """Execute JavaScript code in the web view."""
         self.web_view.page().runJavaScript(code)
 
     def cleanup(self) -> None:
-        """Release resources."""
         self.web_view.setUrl(QUrl("about:blank"))

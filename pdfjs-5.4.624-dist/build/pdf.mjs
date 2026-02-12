@@ -1,3 +1,11 @@
+// --- Polyfill for QtWebEngine / Older Chrome ---
+if (!Uint8Array.prototype.toHex) {
+    Uint8Array.prototype.toHex = function() {
+        return Array.from(this).map(b => b.toString(16).padStart(2, "0")).join("");
+    };
+}
+// -----------------------------------------------
+
 /**
  * @licstart The following is the entire license notice for the
  * JavaScript code in this page
