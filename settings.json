@@ -1,0 +1,22 @@
+{
+  "llm": {
+    "provider": "deepseek",
+    "api_key": "",
+    "base_url": "https://api.deepseek.com/v1",
+    "model_name": "deepseek-chat",
+    "max_tokens": 4096,
+    "temperature": 0.7
+  },
+  "embedding": {
+    "use_local": true,
+    "local_model_name": "sentence-transformers/all-MiniLM-L6-v2",
+    "api_provider": "siliconflow",
+    "api_key": "",
+    "api_base_url": "https://api.siliconflow.cn/v1"
+  },
+  "theme": "dark",
+  "language": "zh",
+  "chunk_size": 512,
+  "chunk_overlap": 64,
+  "top_k_retrieval": 5
+}

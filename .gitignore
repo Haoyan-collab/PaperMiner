@@ -1,0 +1,5 @@
+__pycache__/
+*.zip
+paper_library/
+library.*
+*.log

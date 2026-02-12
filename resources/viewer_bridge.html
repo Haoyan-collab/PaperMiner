@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<!--
+PaperMiner - PDF.js Viewer Bridge
+Custom wrapper that loads PDF.js viewer and establishes QWebChannel
+communication with the Python host application.
+-->
+<html dir="ltr">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PaperMiner PDF Reader</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        html, body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #1E1E1E;
+            font-family: "Segoe UI", sans-serif;
+        }
+
+        #viewer-frame {
+            width: 100%;
+            height: 100%;
+            border: none;
+        }
+
+        /* Floating context menu for text selection */
+        #context-menu {
+            display: none;
+            position: fixed;
+            z-index: 99999;
+            background: #252526;
+            border: 1px solid #3C3C3C;
+            border-radius: 6px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+            padding: 4px;
+            min-width: 140px;
+        }
+        #context-menu button {
+            display: block;
+            width: 100%;
+            padding: 8px 12px;
+            border: none;
+            background: transparent;
+            color: #D4D4D4;
+            font-size: 13px;
+            text-align: left;
+            cursor: pointer;
+            border-radius: 4px;
+        }
+        #context-menu button:hover {
+            background: #094771;
+            color: #FFFFFF;
+        }
+        #context-menu .separator {
+            height: 1px;
+            background: #3C3C3C;
+            margin: 4px 0;
+        }
+
+        /* Annotation highlight overlay */
+        .pm-highlight {
+            position: absolute;
+            background: rgba(255, 255, 0, 0.3);
+            border-radius: 2px;
+            cursor: pointer;
+            pointer-events: auto;
+            z-index: 100;
+            transition: background 0.2s;
+        }
+        .pm-highlight:hover {
+            background: rgba(255, 255, 0, 0.5);
+        }
+
+        /* Toast notification */
+        #toast {
+            display: none;
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background: #0E639C;
+            color: white;
+            padding: 10px 20px;
+            border-radius: 6px;
+            font-size: 13px;
+            z-index: 99999;
+            animation: fadeIn 0.3s;
+        }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+    </style>
+</head>
+<body>
+    <!-- PDF.js viewer is loaded in an iframe -->
+    <iframe id="viewer-frame"></iframe>
+
+    <!-- Floating context menu for selected text -->
+    <div id="context-menu">
+        <button onclick="contextAction('explain')">🧠 AI Explain</button>
+        <button onclick="contextAction('translate')">🌐 Translate</button>
+        <div class="separator"></div>
+        <button onclick="contextAction('highlight')">🖍 Highlight</button>
+        <button onclick="contextAction('save_to_notes')">📝 Save to Notes</button>
+    </div>
+
+    <!-- Toast -->
+    <div id="toast"></div>
+
+    <!-- QWebChannel JS -->
+    <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+
+    <!-- Bridge script -->
+    <script src="bridge.js"></script>
+</body>
+</html>
