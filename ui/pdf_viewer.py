@@ -117,6 +117,7 @@ class JsBridge(QObject):
     context_action = pyqtSignal(str, str)        
     viewer_ready = pyqtSignal()                  
     page_changed = pyqtSignal(int)               
+    delete_annotation = pyqtSignal(int)          # Signal for deleting annotations               
 
     def __init__(self, parent: QObject = None) -> None:
         super().__init__(parent)
@@ -144,6 +145,11 @@ class JsBridge(QObject):
     @pyqtSlot(int)
     def onPageChanged(self, page_num: int) -> None:
         self.page_changed.emit(page_num)
+
+    @pyqtSlot(int)
+    def onDeleteAnnotation(self, annotation_id: int) -> None:
+        logger.info(f"JS → Python: delete annotation request for id={annotation_id}")
+        self.delete_annotation.emit(annotation_id)
 
 
 class PDFViewerWidget(QWidget):
@@ -232,6 +238,7 @@ class PDFViewerWidget(QWidget):
         self.js_bridge.page_changed.connect(
             lambda p: self.page_label.setText(f"Page: {p}")
         )
+        self.js_bridge.delete_annotation.connect(self._handle_delete_annotation)
         logger.info("QWebChannel bridge initialized.")
 
     def load_pdf(self, file_path: str, paper_id: int) -> None:
@@ -309,6 +316,14 @@ class PDFViewerWidget(QWidget):
             main_win.open_ai_with_context(text, action)
         else:
             logger.warning(f"Context action '{action}' not handled")
+
+    def _handle_delete_annotation(self, annotation_id: int) -> None:
+        """Handle annotation deletion request from JavaScript."""
+        try:
+            self.db.delete_annotation(annotation_id)
+            logger.info(f"Annotation {annotation_id} deleted from database")
+        except Exception as e:
+            logger.error(f"Failed to delete annotation {annotation_id}: {e}")
 
     def _refresh_pdf(self) -> None:
         if self.current_pdf_path:

@@ -27,7 +27,7 @@ communication with the Python host application.
         }
 
         /* Floating context menu for text selection */
-        #context-menu {
+        #context-menu, #highlight-menu {
             display: none;
             position: fixed;
             z-index: 99999;
@@ -38,7 +38,7 @@ communication with the Python host application.
             padding: 4px;
             min-width: 140px;
         }
-        #context-menu button {
+        #context-menu button, #highlight-menu button {
             display: block;
             width: 100%;
             padding: 8px 12px;
@@ -50,7 +50,7 @@ communication with the Python host application.
             cursor: pointer;
             border-radius: 4px;
         }
-        #context-menu button:hover {
+        #context-menu button:hover, #highlight-menu button:hover {
             background: #094771;
             color: #FFFFFF;
         }
@@ -102,6 +102,11 @@ communication with the Python host application.
         <div class="separator"></div>
         <button onclick="contextAction('highlight')">🖍 Highlight</button>
         <button onclick="contextAction('save_to_notes')">📝 Save to Notes</button>
+    </div>
+
+    <!-- Floating context menu for existing highlights -->
+    <div id="highlight-menu">
+        <button onclick="deleteHighlight()">🗑️ Delete Highlight</button>
     </div>
 
     <!-- Toast -->

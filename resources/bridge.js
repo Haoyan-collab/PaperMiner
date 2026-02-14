@@ -16,6 +16,7 @@ let selectionRects = [];       // Bounding rects of the selection
 let selectionPage = 0;         // Page number of the selection
 let annotations = [];          // Loaded annotations from DB
 let viewerApp = null;          // Reference to PDFViewerApplication in the iframe
+let menuJustShown = false;     // Flag to prevent immediate menu hiding after showing
 
 // === Initialization ===
 
@@ -236,7 +237,17 @@ function getPageFromSelection(doc, selection) {
 
 // === Context Menu ===
 
+let currentHighlightId = null;  // Track which highlight is being interacted with
+
 function showContextMenu(x, y) {
+    currentHighlightId = null;  // Reset when showing text selection menu
+    
+    // Set flag to prevent immediate hiding
+    menuJustShown = true;
+    setTimeout(function() {
+        menuJustShown = false;
+    }, 200);
+    
     const menu = document.getElementById("context-menu");
     menu.style.display = "block";
 
@@ -250,14 +261,22 @@ function showContextMenu(x, y) {
 }
 
 function hideContextMenu() {
+    // Don't hide if menu was just shown (prevent immediate hiding from double-click events)
+    if (menuJustShown) {
+        return;
+    }
     document.getElementById("context-menu").style.display = "none";
+    document.getElementById("highlight-menu").style.display = "none";
 }
 
 /**
  * Handle context menu button clicks.
  */
 function contextAction(action) {
-    hideContextMenu();
+    // Force hide menus when action is taken
+    menuJustShown = false;
+    document.getElementById("context-menu").style.display = "none";
+    document.getElementById("highlight-menu").style.display = "none";
 
     if (!selectedText) return;
 
@@ -291,16 +310,99 @@ function createHighlight() {
     }
 
     // Render the highlight immediately (optimistic)
-    renderHighlight({
+    const tempAnnotation = {
         id: -1,  // Temporary ID until Python confirms
         page: selectionPage,
         content: selectedText,
         rects: selectionRects,
         color: "#FFFF00",
         comment: ""
-    });
+    };
+    
+    // Add to annotations array so we can update it later
+    annotations.push(tempAnnotation);
+    
+    renderHighlight(tempAnnotation);
 
     showToast("Highlight saved!");
+}
+
+/**
+ * Show menu for interacting with existing highlight.
+ */
+function showHighlightMenu(x, y, annotationId) {
+    hideContextMenu();  // Hide text selection menu if open
+    currentHighlightId = annotationId;
+    
+    // Set flag to prevent immediate hiding
+    menuJustShown = true;
+    setTimeout(function() {
+        menuJustShown = false;
+    }, 200);
+    
+    const menu = document.getElementById("highlight-menu");
+    menu.style.display = "block";
+    
+    // Clamp to viewport
+    const menuRect = menu.getBoundingClientRect();
+    if (x + menuRect.width > window.innerWidth) x = window.innerWidth - menuRect.width - 10;
+    if (y + menuRect.height > window.innerHeight) y = window.innerHeight - menuRect.height - 10;
+    
+    menu.style.left = x + "px";
+    menu.style.top = y + "px";
+}
+
+/**
+ * Delete a highlight annotation.
+ */
+function deleteHighlight() {
+    console.log("deleteHighlight called, currentHighlightId:", currentHighlightId);
+    
+    // Force hide menus (bypass the menuJustShown check)
+    menuJustShown = false;
+    document.getElementById("context-menu").style.display = "none";
+    document.getElementById("highlight-menu").style.display = "none";
+    
+    if (currentHighlightId === null || currentHighlightId === -1) {
+        console.warn("Cannot delete: invalid annotation ID");
+        showToast("Cannot delete: invalid annotation", 3000);
+        return;
+    }
+    
+    // Remove highlight elements from DOM
+    try {
+        const iframe = document.getElementById("viewer-frame");
+        const iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
+        const highlights = iframeDoc.querySelectorAll('.pm-highlight[data-annotation-id="' + currentHighlightId + '"]');
+        
+        console.log("Found " + highlights.length + " highlight elements to remove");
+        
+        highlights.forEach(function(el) {
+            el.remove();
+        });
+        
+        // Remove from local annotations array
+        const beforeLength = annotations.length;
+        annotations = annotations.filter(function(ann) {
+            return ann.id !== currentHighlightId;
+        });
+        console.log("Removed from annotations array: " + (beforeLength - annotations.length) + " items");
+        
+        // Notify Python to delete from database
+        if (pyBridge) {
+            console.log("Calling pyBridge.onDeleteAnnotation with ID:", currentHighlightId);
+            pyBridge.onDeleteAnnotation(currentHighlightId);
+        } else {
+            console.warn("pyBridge not available");
+        }
+        
+        showToast("Highlight deleted");
+    } catch (err) {
+        console.error("Error deleting highlight:", err);
+        showToast("Error deleting highlight", 3000);
+    }
+    
+    currentHighlightId = null;
 }
 
 /**
@@ -322,7 +424,33 @@ window.loadAnnotations = function(annList) {
  */
 window.confirmAnnotation = function(realId) {
     console.log("Annotation confirmed with ID:", realId);
-    // Could update the DOM element's data attribute here if needed
+    
+    try {
+        // Update DOM elements with temporary ID
+        const iframe = document.getElementById("viewer-frame");
+        const iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
+        const tempHighlights = iframeDoc.querySelectorAll('.pm-highlight[data-annotation-id="-1"]');
+        
+        console.log("Updating " + tempHighlights.length + " temporary highlight elements to ID " + realId);
+        
+        tempHighlights.forEach(function(el) {
+            el.setAttribute("data-annotation-id", realId);
+        });
+        
+        // Update annotations array - find the temporary annotation and update its ID
+        const tempAnn = annotations.find(function(ann) {
+            return ann.id === -1;
+        });
+        
+        if (tempAnn) {
+            tempAnn.id = realId;
+            console.log("Updated annotation in array from ID -1 to " + realId);
+        } else {
+            console.warn("Could not find temporary annotation in array");
+        }
+    } catch (err) {
+        console.error("Error in confirmAnnotation:", err);
+    }
 };
 
 /**
@@ -341,9 +469,13 @@ function renderHighlight(ann) {
         }
 
         // Get the text layer container within the page
-        const textLayer = pageDiv.querySelector(".textLayer");
+        let textLayer = pageDiv.querySelector(".textLayer");
         if (!textLayer) {
-            console.warn("Text layer not found for page " + ann.page);
+            // Text layer not ready yet, retry after a delay
+            console.log("Text layer not ready for page " + ann.page + ", retrying in 100ms...");
+            setTimeout(function() {
+                renderHighlight(ann);
+            }, 100);
             return;
         }
 
@@ -370,15 +502,13 @@ function renderHighlight(ann) {
 
             highlight.title = ann.comment || ann.content || "";
 
-            // Click to show annotation details
-            highlight.addEventListener("click", function() {
-                if (pyBridge) {
-                    pyBridge.onContextAction("show_annotation", JSON.stringify({
-                        id: ann.id,
-                        content: ann.content,
-                        comment: ann.comment
-                    }));
-                }
+            // Double-click to show delete option
+            highlight.addEventListener("dblclick", function(e) {
+                e.stopPropagation();
+                e.preventDefault();
+                showHighlightMenu(e.clientX + iframe.getBoundingClientRect().left, 
+                                 e.clientY + iframe.getBoundingClientRect().top, 
+                                 ann.id);
             });
 
             textLayer.appendChild(highlight);
@@ -407,6 +537,11 @@ document.addEventListener("mousedown", function() {
 
 // Prevent context menu from closing immediately
 document.getElementById("context-menu").addEventListener("mousedown", function(e) {
+    e.stopPropagation();
+});
+
+// Prevent highlight menu from closing immediately
+document.getElementById("highlight-menu").addEventListener("mousedown", function(e) {
     e.stopPropagation();
 });
 
